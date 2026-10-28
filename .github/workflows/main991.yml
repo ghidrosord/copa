@@ -1,0 +1,23 @@
+      - name: Start bore tunnel
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip" -OutFile bore.zip
+          Expand-Archive bore.zip -DestinationPath bore -Force
+          $exe = (Resolve-Path .\bore\bore.exe).Path
+
+          Start-Process -FilePath $exe -ArgumentList "local","22","--to","bore.pub" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\bore.out" `
+            -RedirectStandardError  "$env:RUNNER_TEMP\bore.err" `
+            -WindowStyle Hidden
+
+          $port = $null
+          for ($i = 0; $i -lt 15; $i++) {
+            Start-Sleep -Seconds 2
+            $txt = (Get-Content "$env:RUNNER_TEMP\bore.out","$env:RUNNER_TEMP\bore.err" -ErrorAction SilentlyContinue) -join "`n"
+            if ($txt -match 'bore\.pub:(\d+)') { $port = $Matches[1]; break }
+          }
+          if (-not $port) { Write-Host $txt; throw "bore did not start" }
+
+          Write-Host "======================================"
+          Write-Host "ssh runneradmin@bore.pub -p $port"
+          Write-Host "======================================"
