@@ -1,0 +1,67 @@
+name: ngrok-terminal
+
+on:
+  workflow_dispatch:
+
+jobs:
+  session:
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      - name: Start SSH server
+        shell: pwsh
+        run: |
+          $cap = Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Server*'
+          if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name $cap.Name }
+          Start-Service sshd
+          $pwsh = (Get-Command pwsh).Source
+          New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell `
+            -Value $pwsh -PropertyType String -Force | Out-Null
+
+      - name: Set password
+        shell: pwsh
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: net user runneradmin "$env:SSH_PASSWORD"
+
+      - name: Start ngrok tunnel
+        shell: pwsh
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          choco install ngrok -y --no-progress
+          ngrok config add-authtoken $env:NGROK_AUTHTOKEN
+
+          $exe = (Get-Command ngrok).Source
+          Start-Process -FilePath $exe -ArgumentList "tcp","22","--log=stdout" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\ngrok.out" `
+            -RedirectStandardError  "$env:RUNNER_TEMP\ngrok.err" `
+            -WindowStyle Hidden
+
+          $addr = $null
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 3
+            try {
+              $t = Invoke-RestMethod http://127.0.0.1:4040/api/tunnels
+              if ($t.tunnels.Count -gt 0) { $addr = $t.tunnels[0].public_url; break }
+            } catch {}
+          }
+
+          if (-not $addr) {
+            Write-Host "===== NGROK FAILED. Its log: ====="
+            Get-Content "$env:RUNNER_TEMP\ngrok.out" -ErrorAction SilentlyContinue
+            Get-Content "$env:RUNNER_TEMP\ngrok.err" -ErrorAction SilentlyContinue
+            throw "ngrok did not start"
+          }
+
+          $addr = $addr -replace '^tcp://', ''
+          $h, $p = $addr -split ':'
+          Write-Host "======================================"
+          Write-Host "ssh runneradmin@$h -p $p"
+          Write-Host "======================================"
+
+      - name: Keep alive
+        shell: pwsh
+        run: |
+          while (-not (Test-Path C:\stop)) { Start-Sleep -Seconds 30 }
