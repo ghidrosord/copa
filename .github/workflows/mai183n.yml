@@ -1,0 +1,59 @@
+name: ngrok-terminal
+
+on:
+  workflow_dispatch:
+
+jobs:
+  session:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install and start OpenSSH server
+        shell: pwsh
+        run: |
+          $cap = Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Server*'
+          if ($cap.State -ne 'Installed') {
+            Add-WindowsCapability -Online -Name $cap.Name
+          }
+          Start-Service sshd
+
+          # Make PowerShell 7 the default shell for SSH logins
+          $pwsh = (Get-Command pwsh).Source
+          New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell `
+            -Value $pwsh -PropertyType String -Force | Out-Null
+
+      - name: Set login password
+        shell: pwsh
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          net user runneradmin "$env:SSH_PASSWORD"
+
+      - name: Install ngrok and open TCP tunnel
+        shell: pwsh
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          choco install ngrok -y --no-progress
+          ngrok config add-authtoken $env:NGROK_AUTHTOKEN
+          Start-Process ngrok -ArgumentList "tcp 22 --log=stdout" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\ngrok.log" `
+            -WindowStyle Hidden
+          Start-Sleep -Seconds 8
+
+          $tunnels = Invoke-RestMethod http://127.0.0.1:4040/api/tunnels
+          $addr = $tunnels.tunnels[0].public_url -replace '^tcp://', ''
+          $host_, $port = $addr -split ':'
+          Write-Host "======================================"
+          Write-Host "Connect with:"
+          Write-Host "ssh runneradmin@$host_ -p $port"
+          Write-Host "======================================"
+
+      - name: Keep session alive
+        shell: pwsh
+        run: |
+          # Create C:\stop from inside your session to end the job early
+          while (-not (Test-Path C:\stop)) {
+            Start-Sleep -Seconds 30
+          }
